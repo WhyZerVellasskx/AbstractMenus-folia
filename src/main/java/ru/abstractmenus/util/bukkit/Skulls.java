@@ -1,78 +1,106 @@
+
 package ru.abstractmenus.util.bukkit;
 
-import com.mojang.authlib.GameProfile;
+import com.destroystokyo.paper.profile.PlayerProfile;
+import org.bukkit.Bukkit;
+import org.bukkit.Material;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.SkullMeta;
+import org.bukkit.profile.PlayerTextures;
 import ru.abstractmenus.api.Logger;
 import ru.abstractmenus.services.ProfileStorage;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
+import java.net.URI;
+import java.util.Locale;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 public final class Skulls {
+
+    private static final Set<String> loading = ConcurrentHashMap.newKeySet();
 
     private Skulls() {
     }
 
     public static ItemStack getCustomSkull(String url) {
-        GameProfile profile = MojangApi.createProfile(url);
-        return getCustomSkull(profile);
-    }
-
-    public static ItemStack getCustomSkull(GameProfile profile) {
-        ItemStack head = createSkullItem();
-
-        if (profile == null) return head;
-
-        SkullMeta headMeta = (SkullMeta) head.getItemMeta();
-
-        if (headMeta == null) return null;
-
-        Field profileField;
+        if (url == null || url.isBlank()) return createSkullItem();
 
         try {
-            Method method = headMeta.getClass().getDeclaredMethod("setProfile", GameProfile.class);
-            method.setAccessible(true);
-            method.invoke(headMeta, profile);
-        } catch (NoSuchMethodException | IllegalAccessException | InvocationTargetException ex) {
-            try {
-                profileField = headMeta.getClass().getDeclaredField("profile");
-                profileField.setAccessible(true);
-                profileField.set(headMeta, profile);
-            } catch (NoSuchFieldException | IllegalAccessException ex2) {
-                ex2.printStackTrace();
-            }
-        }
+            String textureUrl = url.contains("://") ? url : "https://textures.minecraft.net/texture/" + url;
 
-        head.setItemMeta(headMeta);
+            PlayerProfile profile = Bukkit.createProfile(UUID.randomUUID(), null);
+            PlayerTextures textures = profile.getTextures();
+
+            textures.setSkin(URI.create(textureUrl).toURL());
+            profile.setTextures(textures);
+
+            return getCustomSkull(profile);
+        } catch (Exception | LinkageError exception) {
+            Logger.warning("Cannot create custom skull: " + exception.getMessage());
+            return createSkullItem();
+        }
+    }
+
+    public static ItemStack getCustomSkull(PlayerProfile profile) {
+        ItemStack head = createSkullItem();
+        if (profile == null) return head;
+
+        SkullMeta meta = (SkullMeta) head.getItemMeta();
+        if (meta == null) return head;
+
+        meta.setPlayerProfile(profile);
+        head.setItemMeta(meta);
 
         return head;
     }
 
     public static ItemStack getPlayerSkull(String playerName) {
-        GameProfile profile = ProfileStorage.instance().getProfile(playerName);
+        ProfileStorage storage = ProfileStorage.instance();
+        PlayerProfile profile = storage.getProfile(playerName);
 
         if (profile == null) {
-            Logger.info("Profile '" + playerName + "' not found. Trying to load ...");
+            profile = Bukkit.createProfileExact(null, playerName);
+            storage.add(playerName, profile);
+        }
 
-            profile = MojangApi.loadProfileWithSkin(playerName);
-
-            if (profile == null)
-                profile = ProfileStorage.DEF_PROFILE;
-
-            ProfileStorage.instance().add(playerName, profile);
+        if (!profile.hasTextures()) {
+            loadProfileAsync(playerName, profile);
         }
 
         return getCustomSkull(profile);
     }
 
-    public static ItemStack createSkullItem() {
+    private static void loadProfileAsync(String playerName, PlayerProfile profile) {
+        String key = playerName.toLowerCase(Locale.ROOT);
+        if (!loading.add(key)) return;
+
         try {
-            return new ItemStack(ItemUtil.getHeadMaterial(), 1, (short) 3);
-        } catch (Throwable t) {
-            return new ItemStack(ItemUtil.getHeadMaterial());
+            profile.update().whenComplete((loadedProfile, exception) -> {
+                try {
+                    if (exception != null) {
+                        Logger.warning("Cannot load skin for " + playerName + ": " + exception.getMessage());
+                        return;
+                    }
+
+                    if (loadedProfile == null || !loadedProfile.hasTextures()) return;
+
+                    ProfileStorage storage = ProfileStorage.instance();
+
+                    if (storage.getProfile(playerName) == profile) {
+                        storage.add(playerName, loadedProfile);
+                    }
+                } finally {
+                    loading.remove(key);
+                }
+            });
+        } catch (Exception | LinkageError exception) {
+            loading.remove(key);
+            Logger.warning("Cannot update profile for " + playerName + ": " + exception.getMessage());
         }
     }
 
+    public static ItemStack createSkullItem() {
+        return new ItemStack(Material.PLAYER_HEAD);
+    }
 }
