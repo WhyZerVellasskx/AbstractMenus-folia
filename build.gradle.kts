@@ -1,16 +1,20 @@
+
 @file:Suppress("VulnerableLibrariesLocal")
 
 import kotlin.io.path.listDirectoryEntries
-
+import io.papermc.paperweight.userdev.ReobfArtifactConfiguration
 
 plugins {
     java
     kotlin("jvm") version "2.1.20"
-    id("com.gradleup.shadow") version "8.3.0"
+    id("com.gradleup.shadow") version "9.6.1"
     id("io.papermc.paperweight.userdev") version "1.7.7"
     id("de.eldoria.plugin-yml.bukkit") version "0.7.1"
     id("xyz.jpenilla.run-paper") version "2.3.1"
 }
+
+group = "ru.abstractmenus"
+version = "1.18.0-alpha"
 
 java {
     sourceCompatibility = JavaVersion.VERSION_21
@@ -18,8 +22,11 @@ java {
     toolchain.languageVersion.set(JavaLanguageVersion.of(21))
 }
 
-project.group = "ru.abstractmenus"
-project.version = "1.18.0-alpha"
+kotlin {
+    jvmToolchain(21)
+}
+
+paperweight.reobfArtifactConfiguration = ReobfArtifactConfiguration.MOJANG_PRODUCTION
 
 repositories {
     mavenLocal()
@@ -51,34 +58,29 @@ repositories {
 }
 
 dependencies {
-    // paper
     compileOnly("io.papermc.paper:paper-api:1.21.4-R0.1-SNAPSHOT")
     paperweight.paperDevBundle("1.21-R0.1-SNAPSHOT")
 
-    // lombok
     val lombokVersion = "1.18.32"
     compileOnly("org.projectlombok:lombok:$lombokVersion")
     annotationProcessor("org.projectlombok:lombok:$lombokVersion")
     testCompileOnly("org.projectlombok:lombok:$lombokVersion")
     testAnnotationProcessor("org.projectlombok:lombok:$lombokVersion")
 
-    // kotlin
     library(kotlin("stdlib"))
     library(kotlin("reflect"))
 
-    // serializer
     implementation("io.github.blackbaroness:duration-serializer:2.0.2")
+
     implementation("de.tr7zw:item-nbt-api-plugin:2.9.0") {
         exclude(group = "org.bstats", module = "bstats-bukkit")
         exclude(group = "org.spigotmc", module = "spigot-api")
     }
 
-    // plugin api
     compileOnly("com.github.MilkBowl:VaultAPI:1.7") {
         exclude(group = "org.bukkit", module = "bukkit")
         exclude(group = "org.spigotmc", module = "spigot-api")
     }
-
 
     implementation("com.arcaniax:HeadDatabase-API:1.3.2") {
         exclude(group = "org.bstats", module = "bstats-bukkit")
@@ -112,7 +114,7 @@ dependencies {
     }
 
     compileOnly("net.citizensnpcs:citizens-main:2.0.35-SNAPSHOT") {
-        exclude(group = "*", module = "*")
+        isTransitive = false
     }
 
     implementation("io.lumine:MythicLib-dist:1.6.2-SNAPSHOT")
@@ -121,36 +123,46 @@ dependencies {
 
     compileOnly("me.clip:placeholderapi:2.11.6")
 
-    // junit tests
     val junitVersion = "5.10.2"
+
     testImplementation("org.junit.jupiter:junit-jupiter-api:$junitVersion")
     testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine:$junitVersion")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.10.2")
 
-    // others
     implementation("com.github.AbstractMenus:api:995cd8c9a9")
     implementation("com.fathzer:javaluator:3.0.3")
     implementation("com.github.technicallycoded:FoliaLib:0.4.3")
     implementation("org.openjdk.nashorn:nashorn-core:15.6")
-
-}
-
-kotlin {
-    jvmToolchain(21)
 }
 
 tasks.test {
     useJUnitPlatform()
 }
 
-tasks.assemble {
-    dependsOn(tasks.named("reobfJar"))
+tasks.jar {
+    archiveClassifier.set("plain")
 }
 
 val pluginPackage = "ru.abstractmenus"
+
 tasks.shadowJar {
+    archiveBaseName.set("AbstractMenus")
+    archiveVersion.set(project.version.toString())
+    archiveClassifier.set("")
+    archiveFileName.set("AbstractMenus-${project.version}.jar")
+    destinationDirectory.set(layout.buildDirectory.dir("libs"))
+
     exclude(
-        "DebugProbesKt.bin", "LICENSE*", "deprecated.properties", "driver.properties",
-        "mariadb.properties", "OSGI-INF/**", "META-INF/**", "org/slf4j/**"
+        "DebugProbesKt.bin",
+        "LICENSE*",
+        "deprecated.properties",
+        "driver.properties",
+        "mariadb.properties",
+        "OSGI-INF/**",
+        "META-INF/*.SF",
+        "META-INF/*.RSA",
+        "META-INF/*.DSA",
+        "org/slf4j/**"
     )
 
     dependencies {
@@ -161,13 +173,22 @@ tasks.shadowJar {
         exclude(dependency("org.slf4j:.*"))
     }
 
-    archiveBaseName.set("AbstractMenus")
-    archiveVersion.set("1.18.0-alpha")
-    destinationDirectory.set(file("build/libs"))
-
-    rootDir.resolve("gradle").resolve("relocations.txt").takeIf { it.isFile }?.forEachLine {
-        relocate(it, "$pluginPackage.__relocated__.$it")
+    manifest {
+        attributes["paperweight-mappings-namespace"] = "mojang"
     }
+
+    rootDir.resolve("gradle/relocations.txt")
+        .takeIf { it.isFile }
+        ?.forEachLine { line ->
+            val packageName = line.trim()
+            if (packageName.isNotEmpty() && !packageName.startsWith("#")) {
+                relocate(packageName, "$pluginPackage.__relocated__.$packageName")
+            }
+        }
+}
+
+tasks.assemble {
+    dependsOn(tasks.shadowJar)
 }
 
 tasks.build {
@@ -201,6 +222,7 @@ bukkit {
 
     commands {
         val adminPermission = "am.admin"
+
         register("am") {
             permission = adminPermission
             description = "Menu control commands"
@@ -220,11 +242,12 @@ bukkit {
 
 tasks.runServer {
     dependsOn(tasks.shadowJar)
+
     minecraftVersion("1.21.3")
-    serverJar(rootDir.resolve("gradle").resolve("folia.jar"))
+    serverJar(rootDir.resolve("gradle/folia.jar"))
 
     downloadPlugins {
-        rootDir.resolve("gradle").resolve("server-plugins")
+        rootDir.resolve("gradle/server-plugins")
             .takeIf { it.isDirectory }
             ?.also { pluginJars(it.toPath().listDirectoryEntries("*.jar")) }
     }
